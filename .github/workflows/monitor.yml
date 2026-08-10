@@ -1,0 +1,65 @@
+name: Venteliste-monitor
+
+on:
+  schedule:
+    # Hvert 5. minut. Bemaerk: GitHub Actions' cron er "best effort" og kan
+    # blive forsinket naar der er travlt paa deres runners.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# To koerslen maa aldrig overlappe - ellers opstaar commit-konflikter paa
+# state.json. cancel-in-progress er bevidst false: en igangvaerende koersel
+# kan vaere midt i at sende en notifikation om en aaben venteliste.
+concurrency:
+  group: venteliste-monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Hent repo
+        uses: actions/checkout@v4
+
+      - name: Opsæt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installér afhængigheder
+        run: pip install -r requirements.txt
+
+      - name: Kør monitor
+        run: python monitor.py
+
+      - name: Commit state.json og history.csv
+        run: |
+          if git diff --quiet -- state.json history.csv; then
+            echo "Ingen ændringer at committe"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json history.csv
+          git commit -m "Opdatér venteliste-status [skip ci]"
+
+          # Sikkerhedsnet hvis en anden kørsel alligevel nåede at pushe først.
+          for forsoeg in 1 2 3; do
+            if git push; then
+              echo "Push ok (forsøg $forsoeg)"
+              exit 0
+            fi
+            echo "Push afvist - rebaser og prøver igen ($forsoeg/3)"
+            git pull --rebase --autostash origin main || true
+            sleep 3
+          done
+
+          echo "Kunne ikke pushe efter 3 forsøg" >&2
+          exit 1

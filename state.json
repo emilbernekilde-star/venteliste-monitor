@@ -1,0 +1,42 @@
+{
+  "fonde": {
+    "arendal": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "enghaven": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "fuglevaenget": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "hvidkildegaard": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "oestergaarden": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "soendergaarden": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "solgaarden": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "vestergaarden": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    },
+    "vibehusene": {
+      "sidst_aendret": "2026-08-10T16:55:43+02:00",
+      "status": "Lukket for opskrivning"
+    }
+  },
+  "sidste_heartbeat": "2026-08-10",
+  "struktur_advarsel": {}
+}
