@@ -9,7 +9,7 @@ med det samme i stedet for at skulle tjekke manuelt.
 
 ## Hvad den gør
 
-- Henter hver af de 9 sider hvert 5. minut via GitHub Actions
+- Henter hver af de 9 sider **hvert 90. sekund** via GitHub Actions
 - Læser status-teksten ud af siden (`div.c-article-top__heading--3`)
 - Sammenligner med sidst kendte status i `state.json`
 - **Kun ændringer** udløser en notifikation — ikke hver kørsel
@@ -94,12 +94,37 @@ noget, men du kan roligt slette den i hånden.
 `state.json` skrives **kun** når noget faktisk ændrer sig, så repoet ikke får
 288 commits om dagen. Ingen ændringer = ingen commit.
 
+## Hvordan tidsstyringen virker
+
+GitHubs cron er upålidelig — planlagte kørsler er "best effort" og kan forsinkes
+20+ minutter eller droppes helt. Det blev målt i praksis her: fem `*/5`-slots i
+træk passerede uden en eneste kørsel.
+
+Derfor er opsætningen vendt om. I stedet for mange korte kørsler bruger vi **én
+lang kørsel i timen, der selv tjekker hvert 90. sekund**:
+
+```
+12:00  GitHub starter kørslen
+12:00  tjek → 12:01:30 → 12:03 → ... hvert 90. sekund
+12:59  kørslen slutter
+13:00  næste kørsel starter
+```
+
+Cron skal altså kun ramme rigtigt én gang i timen. Bliver den forsinket, tjekker
+den igangværende kørsel bare videre imens. Starter næste kørsel, før den forrige
+er slut, sætter `concurrency`-gruppen den i kø i stedet for at køre dobbelt.
+
+Effektiv opdagelsestid: **~1,5 minut** mod 5–25+ minutter før.
+
 ## Ting du bør vide
 
-- **Cron er ikke præcis.** GitHub Actions kører planlagte jobs "best effort" og
-  kan forsinke dem i travle perioder. Med et 10–15 minutters vindue kan du i
-  uheldige tilfælde nå at misse en åbning. Kører du efter noget mere garanteret,
-  skal det køre et sted, du selv styrer.
+- **Der er stadig et lille hul** på ca. et minut i timeskiftet, plus hvad cron
+  måtte være forsinket ud over det. Fuldstændig sammenhængende dækning kræver en
+  maskine, der altid er tændt (fx en lille VPS eller Fly.io).
+- **Kørslen bruger næsten en time ad gangen** af GitHubs runners. Det er gratis
+  og ubegrænset for offentlige repos, men det er en tung brug af en gratis
+  tjeneste. Vil du være helt på den sikre side, hører den slags hjemme på noget,
+  du selv betaler for.
 - **Planlagte workflows slås fra** efter 60 dages inaktivitet i repoet. Monitoren
   commit'er selv ved ændringer, men i en stille periode kan det ske — det daglige
   livstegn er din advarsel.

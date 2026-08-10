@@ -8,7 +8,9 @@ en status rent faktisk aendrer sig - kendte statusser huskes i state.json.
 import csv
 import json
 import os
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -60,6 +62,15 @@ TIMEOUT = 15
 TZ = ZoneInfo("Europe/Copenhagen")
 HEARTBEAT_TIME = 8  # dansk lokaltid, hele timer
 
+# Hvor ofte der tjekkes inde i én koersel, og hvor laenge koerslen lever.
+# Varighed 0 betyder "tjek én gang og stop" - det er den lokale test-tilstand.
+INTERVAL_SEK = int(os.environ.get("POLL_INTERVAL_SEK", "90"))
+VARIGHED_SEK = int(float(os.environ.get("POLL_VARIGHED_MIN", "0")) * 60)
+
+# Naar denne er sat, committer scriptet selv state.json + history.csv undervejs.
+# Saettes kun i GitHub Actions - lokale koersler roerer aldrig git.
+AUTO_COMMIT = os.environ.get("AUTO_COMMIT") == "1"
+
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "state.json"
 HISTORY_FILE = ROOT / "history.csv"
@@ -100,6 +111,34 @@ def save_state(state):
         json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def commit_og_push():
+    """Gemmer state + historik i repoet med det samme, saa intet gaar tabt hvis
+    koerslen bliver afbrudt midtvejs. Maa aldrig kunne vaelte monitoren."""
+    if not AUTO_COMMIT:
+        return
+
+    def git(*args, tjek=True):
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True,
+                              text=True, timeout=60, check=tjek)
+
+    try:
+        git("add", "state.json", "history.csv")
+        if git("diff", "--cached", "--quiet", tjek=False).returncode == 0:
+            return  # intet at committe
+        git("commit", "-m", "Opdatér venteliste-status [skip ci]")
+
+        for forsoeg in range(1, 4):
+            if git("push", tjek=False).returncode == 0:
+                print("  -> gemt i repoet")
+                return
+            print(f"  -> push afvist, rebaser og proever igen ({forsoeg}/3)")
+            git("pull", "--rebase", "--autostash", "origin", "main", tjek=False)
+            time.sleep(3)
+        print("  -> ADVARSEL: kunne ikke pushe - state gemmes naeste gang")
+    except Exception as e:
+        print(f"  -> ADVARSEL: git-fejl ({type(e).__name__}: {e}) - fortsaetter")
 
 
 def log_history(timestamp, fond, gammel_status, ny_status):
@@ -222,30 +261,27 @@ def haandter_heartbeat(state, nu, antal_ok, antal_total):
 
 # --- Main -------------------------------------------------------------------
 
-def main():
+def koer_runde(session, state, stoej=True):
+    """Tjekker alle fonde én gang. Returnerer (state_aendret, antal_ok)."""
     nu = datetime.now(TZ)
     nu_iso = nu.isoformat(timespec="seconds")
     i_dag = nu.date().isoformat()
 
-    state = load_state()
     aendret_state = False
     antal_ok = 0
-
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
-
-    print(f"Venteliste-monitor - {nu_iso}")
-    print(f"Tjekker {len(FONDE)} fonde\n")
+    haendelser = []
 
     for fond in FONDE:
-        print(f"{visningsnavn(fond)} ({fond}):")
+        if stoej:
+            print(f"{visningsnavn(fond)} ({fond}):")
         try:
             status, fejl = hent_status(fond, session)
         except Exception as e:  # sikkerhedsnet - én fond maa aldrig vaelte resten
             status, fejl = None, f"uventet fejl: {type(e).__name__}: {e}"
 
         if status is None:
-            print(f"  FEJL: {fejl}")
+            print(f"  FEJL ({visningsnavn(fond)}): {fejl}")
+            haendelser.append(f"fejl: {fond}")
             # Kun uventet HTML tyder paa strukturaendring; timeout/HTTP-fejl er
             # forbigaaende og skal ikke spamme.
             if "blev ikke fundet" in fejl or "var tomt" in fejl:
@@ -257,18 +293,21 @@ def main():
 
         antal_ok += 1
         gammel = state["fonde"].get(fond, {}).get("status")
-        print(f"  status: {status!r}")
+        if stoej:
+            print(f"  status: {status!r}")
 
         if gammel is None:
-            print("  (foerste registrering - ingen notifikation)")
+            if stoej:
+                print("  (foerste registrering - ingen notifikation)")
             state["fonde"][fond] = {"status": status, "sidst_aendret": nu_iso}
             aendret_state = True
         elif gammel != status:
-            print(f"  ÆNDRING: {gammel!r} -> {status!r}")
+            print(f"  ÆNDRING ({visningsnavn(fond)}): {gammel!r} -> {status!r}")
+            haendelser.append(f"{fond}: {status}")
             haandter_aendring(fond, gammel, status, nu_iso)
             state["fonde"][fond] = {"status": status, "sidst_aendret": nu_iso}
             aendret_state = True
-        else:
+        elif stoej:
             print("  uændret")
 
         # En struktur-advarsel er ikke laengere relevant naar parsing virker igen.
@@ -277,14 +316,62 @@ def main():
 
     if haandter_heartbeat(state, nu, antal_ok, len(FONDE)):
         aendret_state = True
+        haendelser.append("livstegn sendt")
+
+    if not stoej:
+        resume = "; ".join(haendelser) if haendelser else "ingen ændringer"
+        print(f"[{nu:%H:%M:%S}] {antal_ok}/{len(FONDE)} ok - {resume}", flush=True)
 
     if aendret_state:
         save_state(state)
-        print("\nstate.json opdateret")
-    else:
-        print("\nIngen aendringer - state.json roert ikke")
+        commit_og_push()
 
-    print(f"Faerdig: {antal_ok}/{len(FONDE)} fonde tjekket uden fejl")
+    return aendret_state, antal_ok
+
+
+def main():
+    state = load_state()
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+
+    start = time.monotonic()
+    slut = start + VARIGHED_SEK
+
+    print(f"Venteliste-monitor - {datetime.now(TZ).isoformat(timespec='seconds')}")
+    print(f"Tjekker {len(FONDE)} fonde")
+
+    # Enkelt-tilstand: én runde og ud. Bruges lokalt og til hurtige tests.
+    if VARIGHED_SEK <= 0:
+        print()
+        aendret, antal_ok = koer_runde(session, state, stoej=True)
+        print("\nstate.json opdateret" if aendret
+              else "\nIngen aendringer - state.json roert ikke")
+        print(f"Faerdig: {antal_ok}/{len(FONDE)} fonde tjekket uden fejl")
+        return 0
+
+    # Loekke-tilstand: bliv i live og tjek igen og igen, saa vi ikke er
+    # afhaengige af at GitHubs cron rammer praecist.
+    print(f"Løkke-tilstand: tjekker hvert {INTERVAL_SEK}. sekund "
+          f"i {VARIGHED_SEK / 60:.1f} minutter\n")
+
+    runde = 0
+    while True:
+        runde += 1
+        try:
+            koer_runde(session, state, stoej=False)
+        except Exception as e:
+            # En runde maa aldrig kunne draebe loekken - saa var vi blinde
+            # resten af timen.
+            print(f"  ADVARSEL: runde {runde} fejlede ({type(e).__name__}: {e})",
+                  flush=True)
+
+        resterende = slut - time.monotonic()
+        if resterende <= INTERVAL_SEK:
+            break
+        time.sleep(INTERVAL_SEK)
+
+    print(f"\nFaerdig efter {runde} runder "
+          f"({(time.monotonic() - start) / 60:.1f} min)")
     return 0
 
 
