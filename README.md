@@ -23,6 +23,7 @@ med det samme i stedet for at skulle tjekke manuelt.
 | En liste **åbner** (status går fra "lukket" til noget andet) | `urgent` | 🚨 *Fond* ER ÅBEN! |
 | Enhver anden statusændring | `default` | Statusændring: *Fond* |
 | Status kunne ikke findes på siden (struktur ændret?) | `low` | Kunne ikke aflæse *Fond* |
+| **Ingen** af siderne kunne hentes — monitoren er blind | `high` | ⚠️ Monitoren er blind |
 | Dagligt livstegn kl. 08:00 dansk tid | `low` | Venteliste-monitor kører |
 
 Struktur-advarslen sendes højst **én gang pr. fond pr. dag**, så en permanent
@@ -89,7 +90,33 @@ noget, men du kan roligt slette den i hånden.
 | `monitor.py` | Hele logikken — hentning, parsing, notifikationer |
 | `state.json` | Sidst kendte status pr. fond. Commit'es tilbage af workflowet |
 | `history.csv` | Logbog over alle statusændringer |
-| `.github/workflows/monitor.yml` | Cron hvert 5. minut + manuel kørsel |
+| `.github/workflows/monitor.yml` | Cron hver time + manuel kørsel |
+| `certs/` | Mellemcertifikat, som findbolig.nu undlader at sende — se nedenfor |
+
+## Certifikat-problemet (vigtigt)
+
+findbolig.nu er fejlkonfigureret: serveren sender kun sit eget certifikat og
+udelader det mellemcertifikat, der binder det til en betroet rod.
+
+macOS skjuler fejlen, fordi Apples TLS-stak selv henter det manglende led ned.
+**Linux gør ikke det** — og GitHub Actions kører Linux. Derfor virkede alt på en
+Mac, mens alle 9 sider fejlede på GitHub med
+`unable to get local issuer certificate`.
+
+Løsningen er `certs/rapidssl-tls-rsa-ca-g1.pem`, som scriptet lægger oven i
+certifis rodcertifikater ved opstart. Alle `.pem`-filer i mappen kommer
+automatisk med.
+
+Fornyer findbolig.nu deres certifikat med en anden udsteder, holder monitoren op
+med at virke. Det opdager du med det samme — så sender den "⚠️ Monitoren er
+blind", og kørslen bliver rød på GitHub. Nyt mellemcertifikat hentes sådan:
+
+```bash
+echo | openssl s_client -connect findbolig.nu:443 -servername findbolig.nu 2>/dev/null | openssl x509 -noout -text | grep -A2 "Authority Information Access"
+```
+
+Hent URL'en bag "CA Issuers", konvertér til PEM med
+`openssl x509 -inform DER -in hentet.crt -out certs/navn.pem`.
 
 `state.json` skrives **kun** når noget faktisk ændrer sig, så repoet ikke får
 288 commits om dagen. Ingen ændringer = ingen commit.

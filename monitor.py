@@ -10,11 +10,13 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import certifi
 import requests
 from bs4 import BeautifulSoup
 
@@ -74,9 +76,37 @@ AUTO_COMMIT = os.environ.get("AUTO_COMMIT") == "1"
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = ROOT / "state.json"
 HISTORY_FILE = ROOT / "history.csv"
+CERT_DIR = ROOT / "certs"
 
 
 # --- Hjaelpere --------------------------------------------------------------
+
+def byg_ca_bundle():
+    """findbolig.nu sender kun sit eget certifikat, ikke mellemcertifikatet.
+
+    macOS henter selv det manglende led ned og skjuler dermed fejlen, men Linux
+    (og dermed GitHub Actions) afviser forbindelsen med
+    'unable to get local issuer certificate'. Vi leverer derfor selv
+    mellemcertifikatet fra certs/ oven i certifis roedder.
+    """
+    ekstra = sorted(CERT_DIR.glob("*.pem")) if CERT_DIR.is_dir() else []
+    if not ekstra:
+        return certifi.where()
+
+    data = Path(certifi.where()).read_text(encoding="utf-8")
+    for sti in ekstra:
+        data += "\n" + sti.read_text(encoding="utf-8")
+
+    fh = tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False,
+                                     encoding="utf-8")
+    fh.write(data)
+    fh.close()
+    print(f"CA-bundle: certifi + {len(ekstra)} lokalt mellemcertifikat(er)")
+    return fh.name
+
+
+CA_BUNDLE = byg_ca_bundle()
+
 
 def visningsnavn(fond):
     return VISNINGSNAVNE.get(fond, fond)
@@ -163,7 +193,8 @@ def notify(titel, besked, prioritet="default", tags=None, klik=None):
         headers["Click"] = klik
     try:
         r = requests.post(
-            NTFY_URL, data=besked.encode("utf-8"), headers=headers, timeout=TIMEOUT
+            NTFY_URL, data=besked.encode("utf-8"), headers=headers,
+            timeout=TIMEOUT, verify=CA_BUNDLE
         )
         r.raise_for_status()
         print(f"  -> notifikation sendt ({prioritet}): {titel}")
@@ -243,6 +274,30 @@ def haandter_parsefejl(fond, fejl, state, i_dag):
     return True
 
 
+def haandter_total_fejl(state, i_dag, fejleksempel):
+    """Ingen af fondene kunne hentes - monitoren er reelt blind.
+
+    Det er noget helt andet end at én side driller, og maa aldrig gaa stille
+    forbi: uden denne besked ville monitoren kunne ligge doed i dagevis, mens
+    workflowet stadig lyste groent.
+    """
+    if state.get("sidste_totalfejl") == i_dag:
+        return False
+
+    notify(
+        titel="⚠️ Monitoren er blind",
+        besked=(
+            f"Ingen af de {len(FONDE)} sider kunne hentes.\n"
+            f"Første fejl: {fejleksempel}\n\n"
+            "Monitoren opdager IKKE en åben venteliste lige nu."
+        ),
+        prioritet="high",
+        tags=["warning", "see_no_evil"],
+    )
+    state["sidste_totalfejl"] = i_dag
+    return True
+
+
 def haandter_heartbeat(state, nu, antal_ok, antal_total):
     """Daglig livstegn kl. 08:00 dansk tid."""
     i_dag = nu.date().isoformat()
@@ -270,6 +325,7 @@ def koer_runde(session, state, stoej=True):
     aendret_state = False
     antal_ok = 0
     haendelser = []
+    foerste_fejl = None
 
     for fond in FONDE:
         if stoej:
@@ -282,6 +338,8 @@ def koer_runde(session, state, stoej=True):
         if status is None:
             print(f"  FEJL ({visningsnavn(fond)}): {fejl}")
             haendelser.append(f"fejl: {fond}")
+            if foerste_fejl is None:
+                foerste_fejl = fejl
             # Kun uventet HTML tyder paa strukturaendring; timeout/HTTP-fejl er
             # forbigaaende og skal ikke spamme.
             if "blev ikke fundet" in fejl or "var tomt" in fejl:
@@ -314,6 +372,11 @@ def koer_runde(session, state, stoej=True):
         if state["struktur_advarsel"].pop(fond, None) is not None:
             aendret_state = True
 
+    if antal_ok == 0:
+        if haandter_total_fejl(state, i_dag, foerste_fejl or "ukendt"):
+            aendret_state = True
+            haendelser.append("ADVARSEL: alle fonde fejlede")
+
     if haandter_heartbeat(state, nu, antal_ok, len(FONDE)):
         aendret_state = True
         haendelser.append("livstegn sendt")
@@ -333,6 +396,7 @@ def main():
     state = load_state()
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT})
+    session.verify = CA_BUNDLE
 
     start = time.monotonic()
     slut = start + VARIGHED_SEK
@@ -347,7 +411,8 @@ def main():
         print("\nstate.json opdateret" if aendret
               else "\nIngen aendringer - state.json roert ikke")
         print(f"Faerdig: {antal_ok}/{len(FONDE)} fonde tjekket uden fejl")
-        return 0
+        # Ingen sider hentet = monitoren er blind. Koerslen skal vaere ROED.
+        return 0 if antal_ok else 1
 
     # Loekke-tilstand: bliv i live og tjek igen og igen, saa vi ikke er
     # afhaengige af at GitHubs cron rammer praecist.
@@ -355,15 +420,19 @@ def main():
           f"i {VARIGHED_SEK / 60:.1f} minutter\n")
 
     runde = 0
+    runder_uden_kontakt = 0
+    sidste_antal_ok = 0
     while True:
         runde += 1
         try:
-            koer_runde(session, state, stoej=False)
+            _, sidste_antal_ok = koer_runde(session, state, stoej=False)
+            runder_uden_kontakt = runder_uden_kontakt + 1 if not sidste_antal_ok else 0
         except Exception as e:
             # En runde maa aldrig kunne draebe loekken - saa var vi blinde
             # resten af timen.
             print(f"  ADVARSEL: runde {runde} fejlede ({type(e).__name__}: {e})",
                   flush=True)
+            runder_uden_kontakt += 1
 
         resterende = slut - time.monotonic()
         if resterende <= INTERVAL_SEK:
@@ -372,6 +441,12 @@ def main():
 
     print(f"\nFaerdig efter {runde} runder "
           f"({(time.monotonic() - start) / 60:.1f} min)")
+
+    # Kom vi aldrig i kontakt med en eneste side, har koerslen ikke gjort sit
+    # arbejde - saa skal den lyse roedt paa GitHub i stedet for at se sund ud.
+    if runder_uden_kontakt == runde:
+        print("FEJL: ingen sider kunne hentes i nogen runde")
+        return 1
     return 0
 
 
