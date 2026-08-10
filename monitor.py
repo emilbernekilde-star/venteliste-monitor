@@ -304,12 +304,16 @@ def haandter_heartbeat(state, nu, antal_ok, antal_total):
     if state.get("sidste_heartbeat") == i_dag or nu.hour < HEARTBEAT_TIME:
         return False
 
-    notify(
-        titel="Venteliste-monitor kører",
-        besked=f"Monitor kører, alle {antal_ok} af {antal_total} fonde tjekket.",
-        prioritet="low",
-        tags=["heartbeat"],
-    )
+    if antal_ok == antal_total:
+        titel = "Venteliste-monitor kører"
+        besked = f"Monitor kører, alle {antal_total} fonde tjekket."
+    else:
+        # Maa ikke lyde beroligende naar noget er galt.
+        titel = "Venteliste-monitor kører med fejl"
+        besked = (f"Monitor kører, men kun {antal_ok} af {antal_total} fonde "
+                  f"kunne tjekkes.")
+
+    notify(titel=titel, besked=besked, prioritet="low", tags=["heartbeat"])
     state["sidste_heartbeat"] = i_dag
     return True
 
