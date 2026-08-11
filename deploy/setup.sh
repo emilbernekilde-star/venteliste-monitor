@@ -28,10 +28,14 @@ if ! id "$BRUGER" >/dev/null 2>&1; then
 fi
 
 echo "==> Henter koden til $DIR"
-# Mappen ejes af '$BRUGER', men git koerer som root. Uden denne undtagelse
-# afviser git at roere repoet med "detected dubious ownership" - hvilket kun
-# rammer ved OPDATERING, ikke ved foerste installation.
-git config --global --add safe.directory "$DIR" 2>/dev/null || true
+# Mappen ejes af '$BRUGER' efter forrige installation, men git koerer som
+# root og afviser at roere et repo, en anden bruger ejer ("dubious
+# ownership"). Vi tager ejerskabet tilbage under opdateringen og giver det
+# tilbage til sidst. Det er mere robust end 'safe.directory', som afhaenger
+# af, hvor HOME peger hen naar scriptet koeres med "curl | sudo bash".
+if [ -d "$DIR" ]; then
+    chown -R root:root "$DIR"
+fi
 
 if [ -d "$DIR/.git" ]; then
     git -C "$DIR" fetch --quiet origin main
