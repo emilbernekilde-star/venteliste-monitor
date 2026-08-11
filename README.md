@@ -143,6 +143,52 @@ er slut, sætter `concurrency`-gruppen den i kø i stedet for at køre dobbelt.
 
 Effektiv opdagelsestid: **~1,5 minut** mod 5–25+ minutter før.
 
+## Kørsel på egen server (anbefalet)
+
+GitHub Actions viste sig utilstrækkelig i praksis: over 18 timer blev kun 5 af
+~18 planlagte kørsler startet, og de kom 6–33 minutter for sent. Målt dækning:
+**26%**. Til et åbningsvindue på 10–15 minutter er det for lidt.
+
+På en altid-tændt maskine forsvinder problemet, fordi der ikke er nogen
+planlægger involveret — processen kører bare videre og sover 90 sekunder mellem
+hvert tjek. Dækning 100%, opdagelsestid ~90 sekunder.
+
+Installér på en frisk Ubuntu-maskine (fx Oracle Cloud Always Free):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/emilbernekilde-star/venteliste-monitor/main/deploy/setup.sh | sudo bash
+```
+
+Scriptet installerer Python, henter koden til `/opt/venteliste-monitor`, opretter
+en systembruger uden login og starter en systemd-tjeneste, der genstarter
+automatisk ved crash og ved genstart af maskinen.
+
+Nyttige kommandoer bagefter:
+
+```bash
+sudo journalctl -u venteliste-monitor -f
+```
+
+```bash
+sudo systemctl restart venteliste-monitor
+```
+
+Hukommelsen ligger i `/var/lib/venteliste-monitor/` — altså **uden for** repoet,
+så en opdatering med `git pull` aldrig kan overskrive den. Der committes intet
+tilbage til GitHub i denne tilstand.
+
+### Tilstande
+
+Scriptet styres af to miljøvariabler:
+
+| `POLL_VARIGHED_MIN` | Betydning | Bruges af |
+|---|---|---|
+| `0` (standard) | tjek én gang og stop | lokal test |
+| `59` | kør i 59 minutter | GitHub Actions |
+| `-1` | kør for evigt | systemd / Fly.io |
+
+`POLL_INTERVAL_SEK` bestemmer sekunder mellem hvert tjek (standard 90).
+
 ## Ting du bør vide
 
 - **Der er stadig et lille hul** på ca. et minut i timeskiftet, plus hvad cron

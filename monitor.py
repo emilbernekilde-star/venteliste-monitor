@@ -65,18 +65,25 @@ TZ = ZoneInfo("Europe/Copenhagen")
 HEARTBEAT_TIME = 8  # dansk lokaltid, hele timer
 
 # Hvor ofte der tjekkes inde i én koersel, og hvor laenge koerslen lever.
-# Varighed 0 betyder "tjek én gang og stop" - det er den lokale test-tilstand.
+#    0  = tjek én gang og stop      (lokal test)
+#   >0  = koer saa mange minutter   (GitHub Actions)
+#   <0  = koer for evigt            (Fly.io / egen server)
 INTERVAL_SEK = int(os.environ.get("POLL_INTERVAL_SEK", "90"))
 VARIGHED_SEK = int(float(os.environ.get("POLL_VARIGHED_MIN", "0")) * 60)
+UENDELIG = VARIGHED_SEK < 0
 
 # Naar denne er sat, committer scriptet selv state.json + history.csv undervejs.
 # Saettes kun i GitHub Actions - lokale koersler roerer aldrig git.
 AUTO_COMMIT = os.environ.get("AUTO_COMMIT") == "1"
 
 ROOT = Path(__file__).resolve().parent
-STATE_FILE = ROOT / "state.json"
-HISTORY_FILE = ROOT / "history.csv"
 CERT_DIR = ROOT / "certs"
+
+# Paa GitHub Actions ligger hukommelsen i repoet. Paa Fly.io ligger den paa en
+# disk, der overlever genstart og nye udgivelser - derfor kan stien saettes.
+DATA_DIR = Path(os.environ.get("STATE_DIR", str(ROOT)))
+STATE_FILE = DATA_DIR / "state.json"
+HISTORY_FILE = DATA_DIR / "history.csv"
 
 
 # --- Hjaelpere --------------------------------------------------------------
@@ -122,6 +129,7 @@ def er_lukket(status):
 
 
 def load_state():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     if not STATE_FILE.exists():
         return {"fonde": {}, "struktur_advarsel": {}, "sidste_heartbeat": None}
     try:
@@ -409,7 +417,8 @@ def main():
     print(f"Tjekker {len(FONDE)} fonde")
 
     # Enkelt-tilstand: én runde og ud. Bruges lokalt og til hurtige tests.
-    if VARIGHED_SEK <= 0:
+    # Bemaerk: kun ved praecis 0 - negativ varighed betyder "for evigt".
+    if not UENDELIG and VARIGHED_SEK == 0:
         print()
         aendret, antal_ok = koer_runde(session, state, stoej=True)
         print("\nstate.json opdateret" if aendret
@@ -419,9 +428,13 @@ def main():
         return 0 if antal_ok else 1
 
     # Loekke-tilstand: bliv i live og tjek igen og igen, saa vi ikke er
-    # afhaengige af at GitHubs cron rammer praecist.
-    print(f"Løkke-tilstand: tjekker hvert {INTERVAL_SEK}. sekund "
-          f"i {VARIGHED_SEK / 60:.1f} minutter\n")
+    # afhaengige af at et vaekkeur rammer praecist.
+    if UENDELIG:
+        print(f"Løkke-tilstand: tjekker hvert {INTERVAL_SEK}. sekund, "
+              f"kører indtil processen stoppes\n")
+    else:
+        print(f"Løkke-tilstand: tjekker hvert {INTERVAL_SEK}. sekund "
+              f"i {VARIGHED_SEK / 60:.1f} minutter\n")
 
     runde = 0
     runder_uden_kontakt = 0
@@ -438,8 +451,7 @@ def main():
                   flush=True)
             runder_uden_kontakt += 1
 
-        resterende = slut - time.monotonic()
-        if resterende <= INTERVAL_SEK:
+        if not UENDELIG and (slut - time.monotonic()) <= INTERVAL_SEK:
             break
         time.sleep(INTERVAL_SEK)
 

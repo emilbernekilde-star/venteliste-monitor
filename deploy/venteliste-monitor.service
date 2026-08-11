@@ -1,0 +1,40 @@
+[Unit]
+Description=Venteliste-monitor - overvaager eksterne ventelister paa findbolig.nu
+Documentation=https://github.com/emilbernekilde-star/venteliste-monitor
+# Vent til maskinen faktisk har netvaerk, ikke bare til at netvaerkslaget er oppe.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=venteliste
+WorkingDirectory=/opt/venteliste-monitor
+
+# Negativ varighed = koer for evigt. Det er hele pointen: ingen planlaegger,
+# ingen koe - processen sover bare 90 sekunder mellem hvert tjek.
+Environment=POLL_INTERVAL_SEK=90
+Environment=POLL_VARIGHED_MIN=-1
+
+# systemd opretter og ejer /var/lib/venteliste-monitor. Hukommelsen ligger
+# der - ikke i repoet - saa "git pull" aldrig kan overskrive den.
+StateDirectory=venteliste-monitor
+Environment=STATE_DIR=/var/lib/venteliste-monitor
+
+# -u saa loggen kommer med det samme i journalctl i stedet for i klumper.
+ExecStart=/opt/venteliste-monitor/venv/bin/python -u monitor.py
+
+# Crasher den, kommer den op igen af sig selv.
+Restart=always
+RestartSec=10
+
+# Beskeden haerdning - tjenesten har ingen grund til at roere resten af systemet.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
