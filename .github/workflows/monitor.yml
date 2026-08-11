@@ -1,13 +1,16 @@
 name: Venteliste-monitor
 
 on:
-  schedule:
-    # Én gang i timen. Hver koersel bliver derefter i live i ~59 minutter og
-    # tjekker selv hvert 90. sekund, saa daekningen er sammenhaengende.
-    # Vi er altsaa kun afhaengige af GitHubs (upaalidelige) cron én gang i
-    # timen i stedet for 12 gange. Starter naeste koersel foer den forrige er
-    # slut, saetter concurrency-gruppen den i koe i stedet for at koere dobbelt.
-    - cron: "0 * * * *"
+  # Cron er slaaet FRA med vilje. Monitoren koerer nu paa en egen server
+  # (Oracle Cloud), hvor en systemd-tjeneste holder processen i live doegnet
+  # rundt. GitHubs planlaegger leverede kun 26% daekning maalt over 18 timer -
+  # 5 af ~18 koersler blev startet, 6-33 minutter for sent.
+  #
+  # Manuel koersel er bevaret som reserve: kan Oracle-maskinen ikke koere,
+  # kan du starte en 59-minutters koersel her med et enkelt klik.
+  # Skal cron slaas til igen, fjernes kommentaren nedenfor.
+  #   schedule:
+  #     - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       varighed_minutter:
