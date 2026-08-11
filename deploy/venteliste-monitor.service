@@ -27,6 +27,16 @@ ExecStart=/opt/venteliste-monitor/venv/bin/python -u monitor.py
 Restart=always
 RestartSec=10
 
+# Genstart én gang i doegnet. Maalt over 3,5 time voksede hukommelsen ~34 kB
+# pr. runde - sandsynligvis bare Pythons allokator, men en daglig genstart
+# goer spoergsmaalet ligegyldigt. Hukommelsen ligger paa disken, saa
+# genstarten koster to sekunder og giver ingen falske notifikationer.
+RuntimeMaxSec=86400
+
+# Sikkerhedsnet hvis den mod forventning loeber loebsk: systemd draeber den,
+# og Restart=always bringer den op igen.
+MemoryMax=256M
+
 # Beskeden haerdning - tjenesten har ingen grund til at roere resten af systemet.
 NoNewPrivileges=yes
 PrivateTmp=yes
